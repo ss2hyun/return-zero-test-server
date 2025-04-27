@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>음성 스트리밍 테스트</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      h1 {
+        color: #333;
+      }
+      .container {
+        margin-top: 20px;
+      }
+      .form-group {
+        margin-bottom: 15px;
+      }
+      label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: bold;
+      }
+      button {
+        padding: 8px 16px;
+        background-color: #4caf50;
+        color: white;
+        border: none;
+        cursor: pointer;
+        font-size: 16px;
+      }
+      button:hover {
+        background-color: #45a049;
+      }
+      button:disabled {
+        background-color: #cccccc;
+        cursor: not-allowed;
+      }
+      #status,
+      #result {
+        margin-top: 20px;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
+      #status {
+        background-color: #f8f8f8;
+      }
+      #result {
+        min-height: 100px;
+        max-height: 300px;
+        overflow-y: auto;
+      }
+      .info-box {
+        background-color: #e7f3fe;
+        border-left: 6px solid #2196f3;
+        padding: 10px;
+        margin-bottom: 15px;
+      }
+      .warning {
+        color: #ff9800;
+      }
+      .error {
+        color: #f44336;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>음성 스트리밍 테스트</h1>
+
+    <div class="info-box">
+      <p>
+        <strong>지원되는 파일 형식:</strong> wav, mp3, m4a, ogg 등 다양한 오디오
+        포맷
+      </p>
+      <p>
+        <strong>참고:</strong> 최적의 결과를 위해 FFmpeg가 설치되어 있어야
+        합니다. FFmpeg 없이도 기본 형식은 작동합니다.
+      </p>
+    </div>
+
+    <div class="container">
+      <div class="form-group">
+        <label for="audioFile">오디오 파일 선택:</label>
+        <input type="file" id="audioFile" accept="audio/*" />
+      </div>
+
+      <div class="form-group">
+        <button id="uploadBtn" disabled>파일 업로드 및 분석</button>
+      </div>
+
+      <div id="status">상태: 대기 중</div>
+
+      <div id="result">
+        <p>음성 인식 결과가 여기에 표시됩니다.</p>
+      </div>
+    </div>
+
+    <script>
+      const audioFileInput = document.getElementById("audioFile");
+      const uploadBtn = document.getElementById("uploadBtn");
+      const statusDiv = document.getElementById("status");
+      const resultDiv = document.getElementById("result");
+
+      let socket = null;
+
+      // 파일 선택 시 업로드 버튼 활성화
+      audioFileInput.addEventListener("change", function () {
+        uploadBtn.disabled = !this.files.length;
+      });
+
+      // 업로드 버튼 클릭 이벤트
+      uploadBtn.addEventListener("click", async function () {
+        const file = audioFileInput.files[0];
+        if (!file) {
+          alert("파일을 선택해주세요.");
+          return;
+        }
+
+        try {
+          uploadBtn.disabled = true;
+          statusDiv.textContent = "상태: 파일 업로드 중...";
+          resultDiv.innerHTML = "";
+
+          // 파일 업로드
+          const formData = new FormData();
+          formData.append("file", file);
+
+          const uploadResponse = await fetch("/api/streaming/upload-audio/", {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!uploadResponse.ok) {
+            throw new Error("파일 업로드 실패");
+          }
+
+          const uploadData = await uploadResponse.json();
+          const filename = uploadData.filename;
+
+          // 웹소켓 연결 설정 및 오류 처리 강화
+          try {
+            // 이전 소켓 연결 종료
+            if (socket && socket.readyState < 2) {
+              socket.close();
+              console.log("이전 웹소켓 연결 종료");
+            }
+
+            // 웹소켓 연결
+            statusDiv.textContent = "상태: 웹소켓 연결 중...";
+            const wsUrl = `ws://${window.location.host}/api/streaming/ws/file`;
+            console.log("웹소켓 연결 시도:", wsUrl);
+
+            socket = new WebSocket(wsUrl);
+
+            // 연결 상태 로깅
+            socket.onclose = function (event) {
+              console.log("웹소켓 닫힘:", event.code, event.reason);
+              statusDiv.textContent = `상태: 연결 종료됨 (코드: ${event.code})`;
+              uploadBtn.disabled = false;
+
+              // 연결 거부 시 추가 정보 표시
+              if (event.code === 1006) {
+                const errorMsg = document.createElement("p");
+                errorMsg.className = "error";
+                errorMsg.textContent =
+                  "오류: 서버가 연결을 거부했습니다. 서버 설정이나 네트워크 연결을 확인하세요.";
+                resultDiv.appendChild(errorMsg);
+              }
+            };
+
+            socket.onerror = function (error) {
+              console.error("웹소켓 오류:", error);
+              statusDiv.textContent = "상태: 웹소켓 오류 발생";
+              uploadBtn.disabled = false;
+
+              const errorMsg = document.createElement("p");
+              errorMsg.className = "error";
+              errorMsg.textContent =
+                "오류: 웹소켓 연결 중 문제가 발생했습니다.";
+              resultDiv.appendChild(errorMsg);
+            };
+
+            // 연결 시간 초과 처리
+            const socketTimeout = setTimeout(() => {
+              if (socket.readyState !== WebSocket.OPEN) {
+                statusDiv.textContent = "상태: 웹소켓 연결 시간 초과";
+                uploadBtn.disabled = false;
+
+                const errorMsg = document.createElement("p");
+                errorMsg.className = "error";
+                errorMsg.textContent =
+                  "오류: 웹소켓 연결 시간이 초과되었습니다. 나중에 다시 시도하세요.";
+                resultDiv.appendChild(errorMsg);
+              }
+            }, 10000); // 10초 제한시간
+
+            // 웹소켓 이벤트 핸들러
+            socket.onopen = function () {
+              clearTimeout(socketTimeout);
+              statusDiv.textContent = "상태: 연결됨. 음성 인식 시작...";
+              console.log("웹소켓 연결됨, 파일 경로 전송:", filename);
+
+              // 파일 경로 전송
+              socket.send(filename);
+            };
+
+            socket.onmessage = function (event) {
+              try {
+                const data = JSON.parse(event.data);
+
+                if (data.error) {
+                  statusDiv.textContent = `상태: 오류 - ${data.error}`;
+                  const errorMsg = document.createElement("p");
+                  errorMsg.className = "error";
+                  errorMsg.textContent = `오류: ${data.error}`;
+                  resultDiv.appendChild(errorMsg);
+                } else if (data.warning) {
+                  const warningMsg = document.createElement("p");
+                  warningMsg.className = "warning";
+                  warningMsg.textContent = `경고: ${data.warning}`;
+                  resultDiv.appendChild(warningMsg);
+                } else if (data.status === "처리 중") {
+                  statusDiv.textContent = `상태: ${
+                    data.message || "처리 중..."
+                  }`;
+                } else if (data.status === "완료") {
+                  statusDiv.textContent = "상태: 음성 인식 완료";
+                  const p = document.createElement("p");
+                  p.style.fontWeight = "bold";
+                  p.style.color = "green";
+                  p.textContent = `최종 결과: ${data.text}`;
+                  resultDiv.appendChild(p);
+                } else if (data.alternatives) {
+                  // 중간 결과 표시
+                  const p = document.createElement("p");
+                  p.textContent = data.alternatives[0].text;
+                  resultDiv.appendChild(p);
+
+                  // 스크롤을 아래로 이동
+                  resultDiv.scrollTop = resultDiv.scrollHeight;
+                }
+              } catch (e) {
+                console.error("메시지 처리 오류:", e);
+              }
+            };
+          } catch (error) {
+            statusDiv.textContent = `상태: 오류 - ${error.message}`;
+            console.error("처리 오류:", error);
+            uploadBtn.disabled = false;
+          }
+        } catch (error) {
+          statusDiv.textContent = `상태: 오류 - ${error.message}`;
+          console.error("처리 오류:", error);
+          uploadBtn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
